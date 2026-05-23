@@ -221,6 +221,22 @@ function ttsKeyboard(mode = "src") {
   };
 }
 
+function ttsOnlyKeyboard(mode = "src") {
+  return {
+    inline_keyboard: [
+      [{ text: "🔊 شنیدن تلفظ انگلیسی", callback_data: `tts:${mode}` }],
+    ],
+  };
+}
+
+function synKeyboard(mode = "src") {
+  return {
+    inline_keyboard: [
+      [{ text: "📚 مترادف و متضاد", callback_data: `syn:${mode}` }],
+    ],
+  };
+}
+
 function extractEnglishFromCallbackMessage(cqMessage, mode) {
   if (mode === "src") {
     const t = cqMessage?.reply_to_message?.text;
@@ -300,19 +316,34 @@ async function googleTts(text) {
 
 async function sendPronunciation(chatId, englishText, replyTo) {
   const trimmed = englishText.trim().slice(0, 1500);
+  console.log(`[tts] Generating pronunciation for: "${trimmed.slice(0, 50)}..."`);
+  
   if (!trimmed) {
     await sendMessage(chatId, "متنی برای تلفظ نیست.", replyTo);
     return;
   }
-  const mp3 = await googleTts(trimmed);
-  await sendAudio(
-    chatId,
-    "pronunciation.mp3",
-    mp3,
-    "audio/mpeg",
-    "🔊 تلفظ انگلیسی",
-    replyTo,
-  );
+  
+  try {
+    const mp3 = await googleTts(trimmed);
+    console.log(`[tts] Generated MP3, size: ${mp3.length} bytes`);
+    
+    await sendAudio(
+      chatId,
+      "pronunciation.mp3",
+      mp3,
+      "audio/mpeg",
+      "🔊 تلفظ انگلیسی",
+      replyTo,
+    );
+    console.log(`[tts] Audio sent successfully`);
+  } catch (e) {
+    console.error("[tts] Error generating pronunciation:", e);
+    await sendMessage(
+      chatId,
+      `خطا در ساخت تلفظ: ${e.message}`,
+      replyTo,
+    );
+  }
 }
 
 // ---------- AI calls with Gemini ----------
@@ -1032,8 +1063,16 @@ module.exports = async (req, res) => {
             try {
               const english = await extractEnglishFromImage(largest.file_id);
               if (english && english.length > 1) {
+                // Check if it's a short phrase (3 words or less) for synonym button
+                const wordCount = english.trim().split(/\s+/).length;
+                const isShortPhrase = wordCount <= 3;
+                
                 const body = `می‌خوای تلفظ انگلیسی متن داخل تصویرو بشنوی؟ 🔊\n\n${EN_MARKER} ${english}`;
-                await sendMessage(chatId, body, msgId, ttsKeyboard("msg"));
+                
+                // Show both buttons for short phrases, only TTS for longer texts
+                const keyboard = isShortPhrase ? ttsKeyboard("msg") : ttsOnlyKeyboard("msg");
+                
+                await sendMessage(chatId, body, msgId, keyboard);
               }
             } catch (e) {
               console.error("english extract error", e);
@@ -1059,8 +1098,17 @@ module.exports = async (req, res) => {
           const latinRatio =
             (src.match(/[A-Za-z]/g)?.length ?? 0) / Math.max(src.length, 1);
           const english = latinRatio > 0.4 ? src : translation || "";
+          
+          // Check if it's a short phrase (3 words or less) for synonym button
+          const wordCount = english.trim().split(/\s+/).length;
+          const isShortPhrase = wordCount <= 3;
+          
           const body = `${translation || "ترجمه‌ای دریافت نشد."}\n\n${EN_MARKER} ${english}`;
-          await sendMessage(chatId, body, msgId, ttsKeyboard("msg"));
+          
+          // Show both buttons for short phrases, only TTS for longer texts
+          const keyboard = isShortPhrase ? ttsKeyboard("msg") : ttsOnlyKeyboard("msg");
+          
+          await sendMessage(chatId, body, msgId, keyboard);
         } catch (e) {
           const detail = e instanceof Error ? e.message : String(e);
           console.error("text error", detail);
