@@ -44,7 +44,7 @@ function joinKeyboard() {
   return {
     inline_keyboard: [
       [{ text: "📢 عضویت در کانال", url: CHANNEL_URL }],
-      [{ text: "✅ عضو شدم، بررسی کن", callback_data: "verify" }],
+      [{ text: "✅ عضو شدم، بررسی کن", callback_data: "verify" }], 
     ],
   };
 }
