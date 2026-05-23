@@ -393,19 +393,21 @@ async function synonymsAndAntonym(input) {
           parts: [
             {
               text:
-                "برای کلمه انگلیسی، مترادف و متضاد را به این فرمت بنویس:\n\n" +
-                "🔤 *کلمه:* <کلمه انگلیسی>\n" +
-                "🇮🇷 *ترجمه:* <معنی فارسی>\n\n" +
-                "✅ *مترادف‌ها:*\n" +
-                "1. <مترادف۱> — <معنی فارسی>\n" +
-                "2. <مترادف۲> — <معنی فارسی>\n" +
-                "3. <مترادف۳> — <معنی فارسی>\n\n" +
-                "❌ *متضاد:*\n" +
-                "• <متضاد> — <معنی فارسی>\n\n" +
-                "📝 *جمله نمونه:*\n" +
-                "<جمله انگلیسی>\n" +
-                "ترجمه: <ترجمه فارسی>\n\n" +
-                "اگر کلمه نامشخص است بنویس: کلمه قابل تشخیص نیست.",
+                "You are an English vocabulary helper for Persian speakers. Given a word or short phrase " +
+                "(possibly in Persian), identify the target English word. Then return EXACTLY this Markdown format in Persian, no extra text:\n\n" +
+                "🔤 *کلمه:* <english word>\n" +
+                "🇮🇷 *ترجمه:* <persian meaning>\n\n" +
+                "✅ *مترادف‌ها (Synonyms):*\n" +
+                "1. <syn1> — <persian meaning>\n" +
+                "2. <syn2> — <persian meaning>\n" +
+                "3. <syn3> — <persian meaning>\n\n" +
+                "❌ *متضاد (Antonym):*\n" +
+                "• <ant> — <persian meaning>\n\n" +
+                "📝 *جمله‌ی نمونه:*\n" +
+                "<a simple English sentence using the original word>\n" +
+                "ترجمه: <persian translation of the sentence>\n\n" +
+                "Rules: pick common, useful synonyms. If the input has multiple words, focus on the most important content word. " +
+                "If no English equivalent exists or the word is unclear, reply in Persian: 'کلمه قابل تشخیص نیست.'",
             },
           ],
         },
@@ -506,7 +508,7 @@ async function extractEnglishFromImage(fileId) {
           parts: [
             {
               text:
-                "تمام متن انگلیسی داخل تصویر را استخراج کن. فقط متن انگلیسی را بنویس، هیچ چیز دیگر. اگر متن انگلیسی نیست، چیزی ننویس.",
+                "Extract ALL English text from the image, preserving order and punctuation. Output ONLY the English text, nothing else. If none, output an empty string.",
             },
             {
               inline_data: {
@@ -556,14 +558,16 @@ async function analyzeLabTestImage(fileId) {
           parts: [
             {
               text:
-                "برگه آزمایش پزشکی را تحلیل کن و به فارسی بنویس:\n" +
-                "۱) نام آزمایش\n" +
-                "۲) جدول شاخص‌ها: نام | مقدار | محدوده مرجع | وضعیت\n" +
-                "۳) توضیح مقادیر غیرطبیعی\n" +
-                "۴) جمع‌بندی کلی\n" +
-                "۵) پیشنهاد گام بعدی\n" +
-                "۶) هشدار: این تحلیل آموزشی است و جایگزین نظر پزشک نیست.\n\n" +
-                "اگر تصویر برگه آزمایش نیست بنویس: این تصویر برگه آزمایش نیست.",
+                "تو یک دستیار پزشکی هستی که نتایج آزمایش‌های پزشکی (خون، ادرار، بیوشیمی، هورمونی و …) را به زبان فارسی روان تحلیل می‌کنی.\n" +
+                "از روی تصویرِ برگه‌ی آزمایش:\n" +
+                "۱) نام آزمایش/پروفایل را بنویس.\n" +
+                "۲) جدولی از هر شاخص بساز با ستون‌های: نام شاخص | مقدار بیمار | محدوده‌ی مرجع | وضعیت (طبیعی/بالا/پایین).\n" +
+                "۳) برای هر مقدار غیرطبیعی، توضیح کوتاه و قابل فهم بده که این یعنی چه و معمولاً به چه دلایلی رخ می‌دهد.\n" +
+                "۴) یک «جمع‌بندی کلی» در ۳–۵ خط بنویس.\n" +
+                "۵) در صورت لزوم، «پیشنهاد گام بعدی» (مثل تکرار آزمایش، مراجعه به متخصص خاص، تغییر سبک زندگی) اضافه کن.\n" +
+                "۶) در انتها این هشدار را بیاور: «این تحلیل صرفاً جنبه‌ی آموزشی دارد و جایگزین نظر پزشک نیست.»\n" +
+                "اگر تصویر برگه‌ی آزمایش نیست یا کیفیتش پایین است، صادقانه بگو و راهنمایی کن دوباره با کیفیت بهتر بفرستد.\n" +
+                "فقط فارسی بنویس و از Markdown ساده استفاده کن.",
             },
             {
               inline_data: {
@@ -688,9 +692,7 @@ async function transcribeAndTranslateMedia(fileId, kind) {
           parts: [
             {
               text:
-                kind === "audio"
-                  ? "صدای انگلیسی را رونویسی کن و به فارسی ترجمه کن. خروجی را به صورت بخش‌های زیرنویس (هر بخش حداکثر ۷ ثانیه) بده."
-                  : "صدای انگلیسی داخل ویدیو را رونویسی کن و به فارسی ترجمه کن. خروجی را به صورت بخش‌های زیرنویس (هر بخش حداکثر ۷ ثانیه) بده.",
+                "You transcribe English speech (from audio or video) and translate it to Persian (Farsi). Split into short subtitle segments (max ~7 seconds each, ideally one sentence or clause per segment). For each segment provide start and end times in seconds (floats) and the Persian translation only (no English, no transliteration). Be accurate with timing. If there is no English speech, return an empty segments array.",
             },
           ],
         },
