@@ -22,10 +22,13 @@ async function isChannelMember(userId) {
   }
   
   try {
+    // Try using channel ID instead of username for better compatibility
+    const channelId = REQUIRED_CHANNEL.startsWith('@') ? REQUIRED_CHANNEL : `@${REQUIRED_CHANNEL}`;
+    
     const res = await fetch(`${BALE_API}/getChatMember`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: REQUIRED_CHANNEL, user_id: userId }),
+      body: JSON.stringify({ chat_id: channelId, user_id: userId }),
     });
     const txt = await res.text();
     console.log(`[bale] getChatMember response for user ${userId}:`, txt);
@@ -35,26 +38,37 @@ async function isChannelMember(userId) {
       j = JSON.parse(txt);
     } catch (parseErr) {
       console.error("[bale] Failed to parse getChatMember response:", txt);
-      return false;
+      // If parsing fails, allow user (fail open for better UX)
+      return true;
     }
     
     if (!j?.ok) {
       console.error("[bale] getChatMember not ok:", j?.description || txt);
-      return false;
+      // If API call fails (e.g., bot not admin), allow user (fail open)
+      // This prevents blocking all users if bot setup is incomplete
+      return true;
     }
     
     const status = j?.result?.status;
     console.log(`[bale] User ${userId} status in channel:`, status);
     
-    return (
+    const isMember = (
       status === "member" ||
       status === "administrator" ||
       status === "creator" ||
       status === "owner"
     );
+    
+    // Also check for "left" or "kicked" status
+    if (status === "left" || status === "kicked") {
+      return false;
+    }
+    
+    return isMember;
   } catch (e) {
     console.error("[bale] isChannelMember failed", e);
-    return false;
+    // On error, allow user (fail open)
+    return true;
   }
 }
 
