@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Bale Doctor Bot with Gemini AI
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 512
+    Runtime: nodejs18.x
+
+Resources:
+  BaleWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: lambda.handler
+      Environment:
+        Variables:
+          BALE_TOKEN: !Ref BaleToken
+          GEMINI_API_KEY: !Ref GeminiApiKey
+      Events:
+        WebhookApi:
+          Type: Api
+          Properties:
+            Path: /api/webhook
+            Method: post
+        HealthCheck:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: get
+
+Parameters:
+  BaleToken:
+    Type: String
+    Description: Bale Bot Token
+    NoEcho: true
+  GeminiApiKey:
+    Type: String
+    Description: Gemini API Key
+    NoEcho: true
+
+Outputs:
+  WebhookApi:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/api/webhook"

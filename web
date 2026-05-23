@@ -1,0 +1,836 @@
+import { createFileRoute } from "@tanstack/react-router";
+
+const BALE_API = "https://tapi.bale.ai";
+const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
+
+// Required channel membership
+const REQUIRED_CHANNEL = "@motarjem_mehran";
+const CHANNEL_URL = "https://ble.ir/motarjem_mehran";
+
+async function isChannelMember(token: string, userId: number): Promise<boolean> {
+  try {
+    const res = await safeFetch(`${BALE_API}/bot${token}/getChatMember`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: REQUIRED_CHANNEL, user_id: userId }),
+    });
+    const txt = await res.text();
+    let j: any;
+    try { j = JSON.parse(txt); } catch { return false; }
+    if (!j?.ok) return false;
+    const status = j?.result?.status;
+    return status === "member" || status === "administrator" || status === "creator" || status === "owner";
+  } catch (e) {
+    console.error("[bale] isChannelMember failed", e);
+    return false;
+  }
+}
+
+function joinKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: "📢 عضویت در کانال", url: CHANNEL_URL }],
+      [{ text: "✅ عضو شدم، بررسی کن", callback_data: "verify" }],
+    ],
+  };
+}
+
+async function sendJoinPrompt(token: string, chatId: number, replyTo?: number) {
+  await sendMessage(
+    token,
+    chatId,
+    `سلام 👋\nبرای استفاده از ربات، اول باید عضو کانال ما بشی:\n${REQUIRED_CHANNEL}\n\nبعد از عضویت، روی دکمه «✅ عضو شدم، بررسی کن» بزن.`,
+    replyTo,
+    joinKeyboard(),
+  );
+}
+
+// ---------- Bale helpers ----------
+async function safeFetch(url: string, init?: RequestInit) {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    console.error("[bale] fetch failed", url, e);
+    throw e instanceof Error ? e : new Error(String(e));
+  }
+}
+
+async function sendMessage(
+  token: string,
+  chatId: number,
+  text: string,
+  replyTo?: number,
+  replyMarkup?: unknown,
+) {
+  try {
+    await safeFetch(`${BALE_API}/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text.slice(0, 4000),
+        reply_to_message_id: replyTo,
+        reply_markup: replyMarkup,
+      }),
+    });
+  } catch (e) {
+    console.error("[bale] sendMessage failed", e);
+  }
+}
+
+async function answerCallbackQuery(token: string, callbackQueryId: string, text?: string) {
+  try {
+    await safeFetch(`${BALE_API}/bot${token}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text: text?.slice(0, 200) }),
+    });
+  } catch (e) {
+    console.error("[bale] answerCallbackQuery failed", e);
+  }
+}
+
+async function sendAudio(
+  token: string,
+  chatId: number,
+  filename: string,
+  bytes: Uint8Array,
+  contentType: string,
+  caption?: string,
+  replyTo?: number,
+) {
+  try {
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    if (caption) form.append("caption", caption.slice(0, 1000));
+    if (replyTo) form.append("reply_to_message_id", String(replyTo));
+    form.append("audio", new Blob([bytes as unknown as BlobPart], { type: contentType }), filename);
+    const res = await safeFetch(`${BALE_API}/bot${token}/sendAudio`, { method: "POST", body: form });
+    if (!res.ok) {
+      const t = await res.text();
+      console.error("[bale] sendAudio failed", res.status, t);
+      // fallback to sendDocument so user still gets the file
+      await sendDocument(token, chatId, filename, bytes, contentType, caption, replyTo);
+    }
+  } catch (e) {
+    console.error("[bale] sendAudio error", e);
+  }
+}
+
+// ---------- TTS (English pronunciation) ----------
+// Stateless: we encode the source of the English text into callback_data,
+// and read the actual text from the callback message itself (no in-memory store
+// — workers are stateless across invocations).
+//
+// Modes:
+//   tts:src  -> English text is in cq.message.reply_to_message.text (user's original message)
+//   tts:msg  -> English text is in cq.message.text after the EN_MARKER line
+const EN_MARKER = "🔤 EN:";
+function ttsKeyboard(mode: "src" | "msg" = "src") {
+  return {
+    inline_keyboard: [
+      [{ text: "🔊 شنیدن تلفظ انگلیسی", callback_data: `tts:${mode}` }],
+      [{ text: "📚 مترادف و متضاد", callback_data: `syn:${mode}` }],
+    ],
+  };
+}
+function synOnlyKeyboard() {
+  return { inline_keyboard: [[{ text: "📚 مترادف و متضاد", callback_data: "syn:src" }]] };
+}
+function extractEnglishFromCallbackMessage(cqMessage: any, mode: string): string | null {
+  if (mode === "src") {
+    const t = cqMessage?.reply_to_message?.text;
+    return typeof t === "string" && t.trim() ? t.trim() : null;
+  }
+  if (mode === "msg") {
+    const t: string = cqMessage?.text ?? "";
+    const idx = t.indexOf(EN_MARKER);
+    if (idx === -1) return null;
+    const after = t.slice(idx + EN_MARKER.length).trim();
+    // Strip trailing helper line if present
+    const stop = after.indexOf("\n\n");
+    return (stop === -1 ? after : after.slice(0, stop)).trim() || null;
+  }
+  return null;
+}
+
+function chunkForTts(text: string, max = 190): string[] {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  const parts: string[] = [];
+  const sentences = clean.split(/(?<=[.!?])\s+/);
+  let buf = "";
+  for (const s of sentences) {
+    if (s.length > max) {
+      if (buf) { parts.push(buf); buf = ""; }
+      const words = s.split(" ");
+      let cur = "";
+      for (const w of words) {
+        if ((cur + " " + w).trim().length > max) {
+          if (cur) parts.push(cur);
+          cur = w;
+        } else {
+          cur = (cur ? cur + " " : "") + w;
+        }
+      }
+      if (cur) parts.push(cur);
+    } else if ((buf + " " + s).trim().length > max) {
+      if (buf) parts.push(buf);
+      buf = s;
+    } else {
+      buf = (buf ? buf + " " : "") + s;
+    }
+  }
+  if (buf) parts.push(buf);
+  return parts;
+}
+
+async function googleTts(text: string): Promise<Uint8Array> {
+  const chunks = chunkForTts(text);
+  if (chunks.length === 0) throw new Error("متنی برای تلفظ پیدا نشد.");
+  const buffers: Uint8Array[] = [];
+  for (const c of chunks) {
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(c)}`;
+    const res = await safeFetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Referer": "https://translate.google.com/",
+      },
+    });
+    if (!res.ok) throw new Error(`خطا در دریافت صوت (${res.status})`);
+    buffers.push(new Uint8Array(await res.arrayBuffer()));
+  }
+  let total = 0;
+  for (const b of buffers) total += b.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const b of buffers) { out.set(b, off); off += b.length; }
+  return out;
+}
+
+async function sendPronunciation(token: string, chatId: number, englishText: string, replyTo?: number) {
+  const trimmed = englishText.trim().slice(0, 1500);
+  if (!trimmed) {
+    await sendMessage(token, chatId, "متنی برای تلفظ نیست.", replyTo);
+    return;
+  }
+  const mp3 = await googleTts(trimmed);
+  await sendAudio(token, chatId, "pronunciation.mp3", mp3, "audio/mpeg", "🔊 تلفظ انگلیسی", replyTo);
+}
+
+async function extractEnglishFromImage(token: string, fileId: string): Promise<string> {
+  const { bytes, mime: ct, path } = await getFileBytes(token, fileId);
+  const mime = guessMime(path, ct, "image/jpeg", {
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    webp: "image/webp", gif: "image/gif", heic: "image/heic", heif: "image/heif",
+  });
+  const b64 = toBase64(bytes);
+  const data = await gateway({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      { role: "system", content: "Extract ALL English text from the image, preserving order and punctuation. Output ONLY the English text, nothing else. If none, output an empty string." },
+      { role: "user", content: [
+        { type: "text", text: "Extract English text." },
+        { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
+      ]},
+    ],
+  });
+  return (data.choices?.[0]?.message?.content ?? "").trim();
+}
+
+async function sendDocument(
+  token: string,
+  chatId: number,
+  filename: string,
+  bytes: Uint8Array,
+  contentType: string,
+  caption?: string,
+  replyTo?: number,
+) {
+  try {
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    if (caption) form.append("caption", caption.slice(0, 1000));
+    if (replyTo) form.append("reply_to_message_id", String(replyTo));
+    form.append("document", new Blob([bytes as unknown as BlobPart], { type: contentType }), filename);
+    const res = await safeFetch(`${BALE_API}/bot${token}/sendDocument`, { method: "POST", body: form });
+    if (!res.ok) {
+      const t = await res.text();
+      console.error("[bale] sendDocument failed", res.status, t);
+    }
+  } catch (e) {
+    console.error("[bale] sendDocument error", e);
+  }
+}
+
+async function getFileBytes(token: string, fileId: string): Promise<{ bytes: Uint8Array; mime: string; path: string }> {
+  const fileRes = await safeFetch(`${BALE_API}/bot${token}/getFile?file_id=${fileId}`);
+  const fileText = await fileRes.text();
+  let fileJson: any;
+  try { fileJson = JSON.parse(fileText); } catch { throw new Error(`getFile non-JSON: ${fileText.slice(0, 200)}`); }
+  const filePath = fileJson?.result?.file_path;
+  if (!filePath) throw new Error(`No file_path: ${fileText.slice(0, 200)}`);
+
+  const imgRes = await safeFetch(`${BALE_API}/file/bot${token}/${filePath}`);
+  if (!imgRes.ok) throw new Error(`download failed ${imgRes.status}`);
+  const bytes = new Uint8Array(await imgRes.arrayBuffer());
+  let mime = imgRes.headers.get("content-type")?.split(";")[0]?.trim() || "";
+  return { bytes, mime, path: filePath };
+}
+
+function toBase64(buf: Uint8Array): string {
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK) as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+function guessMime(path: string, current: string, fallback: string, map: Record<string, string>): string {
+  let mime = current;
+  if (!mime || mime === "application/octet-stream") {
+    const ext = path.split(".").pop()?.toLowerCase();
+    mime = (ext && map[ext]) || fallback;
+  }
+  return mime;
+}
+
+// ---------- AI calls ----------
+async function gateway(body: unknown): Promise<any> {
+  const apiKey = process.env.LOVABLE_API_KEY;
+  if (!apiKey) throw new Error("LOVABLE_API_KEY not configured");
+  const res = await safeFetch(GATEWAY, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    if (res.status === 429) throw new Error("سرویس ترجمه شلوغه. چند لحظه دیگه دوباره امتحان کن.");
+    if (res.status === 402) throw new Error("اعتبار سرویس ترجمه تموم شده. لطفاً به ادمین اطلاع بده.");
+    throw new Error(`AI gateway ${res.status}: ${t.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+async function translateText(text: string): Promise<string> {
+  const data = await gateway({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      { role: "system", content: "You are a professional English-to-Persian (Farsi) translator. Translate the user's English text into natural, fluent Persian. Output ONLY the Persian translation, no explanations, no English." },
+      { role: "user", content: text },
+    ],
+  });
+  return data.choices?.[0]?.message?.content?.trim() ?? "";
+}
+
+async function synonymsAndAntonym(input: string): Promise<string> {
+  // Detect language: if mostly Latin, treat as English word; otherwise translate to English first via the same model.
+  const latinRatio = (input.match(/[A-Za-z]/g)?.length ?? 0) / Math.max(input.length, 1);
+  const isEnglish = latinRatio > 0.4;
+  const data = await gateway({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an English vocabulary helper for Persian speakers. Given a word or short phrase " +
+          "(possibly in Persian), identify the target English word. Then return EXACTLY this Markdown format in Persian, no extra text:\n\n" +
+          "🔤 *کلمه:* <english word>\n" +
+          "🇮🇷 *ترجمه:* <persian meaning>\n\n" +
+          "✅ *مترادف‌ها (Synonyms):*\n" +
+          "1. <syn1> — <persian meaning>\n" +
+          "2. <syn2> — <persian meaning>\n" +
+          "3. <syn3> — <persian meaning>\n\n" +
+          "❌ *متضاد (Antonym):*\n" +
+          "• <ant> — <persian meaning>\n\n" +
+          "📝 *جمله‌ی نمونه:*\n" +
+          "<a simple English sentence using the original word>\n" +
+          "ترجمه: <persian translation of the sentence>\n\n" +
+          "Rules: pick common, useful synonyms. If the input has multiple words, focus on the most important content word. " +
+          "If no English equivalent exists or the word is unclear, reply in Persian: 'کلمه قابل تشخیص نیست.'",
+      },
+      { role: "user", content: isEnglish ? input.trim() : `این کلمه فارسیه: ${input.trim()}` },
+    ],
+  });
+  return data.choices?.[0]?.message?.content?.trim() ?? "";
+}
+
+
+async function translateImage(token: string, fileId: string): Promise<string> {
+  const { bytes, mime: ct, path } = await getFileBytes(token, fileId);
+  const mime = guessMime(path, ct, "image/jpeg", {
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    webp: "image/webp", gif: "image/gif", heic: "image/heic", heif: "image/heif",
+  });
+  const b64 = toBase64(bytes);
+  const data = await gateway({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      { role: "system", content: "You are an OCR + English-to-Persian translator. Read all English text in the image and translate it into natural fluent Persian. Output ONLY the Persian translation. If no English text, reply in Persian: 'متن انگلیسی در تصویر پیدا نشد.'" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Translate the English text in this image to Persian." },
+          { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
+        ],
+      },
+    ],
+  });
+  return data.choices?.[0]?.message?.content?.trim() ?? "";
+}
+
+async function analyzeLabTestImage(token: string, fileId: string): Promise<string> {
+  const { bytes, mime: ct, path } = await getFileBytes(token, fileId);
+  const mime = guessMime(path, ct, "image/jpeg", {
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    webp: "image/webp", gif: "image/gif", heic: "image/heic", heif: "image/heif",
+  });
+  const b64 = toBase64(bytes);
+  const data = await gateway({
+    model: "google/gemini-2.5-pro",
+    messages: [
+      {
+        role: "system",
+        content:
+          "تو یک دستیار پزشکی هستی که نتایج آزمایش‌های پزشکی (خون، ادرار، بیوشیمی، هورمونی و …) را به زبان فارسی روان تحلیل می‌کنی.\n" +
+          "از روی تصویرِ برگه‌ی آزمایش:\n" +
+          "۱) نام آزمایش/پروفایل را بنویس.\n" +
+          "۲) جدولی از هر شاخص بساز با ستون‌های: نام شاخص | مقدار بیمار | محدوده‌ی مرجع | وضعیت (طبیعی/بالا/پایین).\n" +
+          "۳) برای هر مقدار غیرطبیعی، توضیح کوتاه و قابل فهم بده که این یعنی چه و معمولاً به چه دلایلی رخ می‌دهد.\n" +
+          "۴) یک «جمع‌بندی کلی» در ۳–۵ خط بنویس.\n" +
+          "۵) در صورت لزوم، «پیشنهاد گام بعدی» (مثل تکرار آزمایش، مراجعه به متخصص خاص، تغییر سبک زندگی) اضافه کن.\n" +
+          "۶) در انتها این هشدار را بیاور: «این تحلیل صرفاً جنبه‌ی آموزشی دارد و جایگزین نظر پزشک نیست.»\n" +
+          "اگر تصویر برگه‌ی آزمایش نیست یا کیفیتش پایین است، صادقانه بگو و راهنمایی کن دوباره با کیفیت بهتر بفرستد.\n" +
+          "فقط فارسی بنویس و از Markdown ساده استفاده کن.",
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "لطفاً این برگه‌ی آزمایش را به‌صورت کامل تحلیل کن." },
+          { type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } },
+        ],
+      },
+    ],
+  });
+  return data.choices?.[0]?.message?.content?.trim() ?? "";
+}
+
+function wantsAnalysis(caption?: string): boolean {
+  if (!caption) return false;
+  const c = caption.toLowerCase();
+  return (
+    c.includes("/analyze") ||
+    c.includes("/test") ||
+    caption.includes("تحلیل") ||
+    caption.includes("آزمایش") ||
+    caption.includes("ازمایش")
+  );
+}
+
+async function sendLongMessage(token: string, chatId: number, text: string, replyTo?: number) {
+  const MAX = 3800;
+  if (text.length <= MAX) return sendMessage(token, chatId, text, replyTo);
+  for (let i = 0; i < text.length; i += MAX) {
+    await sendMessage(token, chatId, text.slice(i, i + MAX), i === 0 ? replyTo : undefined);
+  }
+}
+
+// ---------- Audio → SRT ----------
+function secondsToSrtTime(s: number): string {
+  if (!isFinite(s) || s < 0) s = 0;
+  const ms = Math.round(s * 1000);
+  const hh = Math.floor(ms / 3600000);
+  const mm = Math.floor((ms % 3600000) / 60000);
+  const ss = Math.floor((ms % 60000) / 1000);
+  const mmm = ms % 1000;
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${pad(hh)}:${pad(mm)}:${pad(ss)},${pad(mmm, 3)}`;
+}
+
+function buildSrt(segments: Array<{ start: number; end: number; text: string }>): string {
+  return segments
+    .filter((s) => s && typeof s.text === "string" && s.text.trim())
+    .map((s, i) => `${i + 1}\n${secondsToSrtTime(s.start)} --> ${secondsToSrtTime(s.end)}\n${s.text.trim()}\n`)
+    .join("\n");
+}
+
+async function transcribeAndTranslateMedia(
+  token: string,
+  fileId: string,
+  kind: "audio" | "video",
+): Promise<{ srt: string; preview: string }> {
+  const { bytes, mime: ct, path } = await getFileBytes(token, fileId);
+  const mime = kind === "audio"
+    ? guessMime(path, ct, "audio/ogg", {
+        ogg: "audio/ogg", oga: "audio/ogg", opus: "audio/ogg",
+        mp3: "audio/mpeg", m4a: "audio/mp4", mp4: "audio/mp4",
+        wav: "audio/wav", webm: "audio/webm", aac: "audio/aac", flac: "audio/flac",
+      })
+    : guessMime(path, ct, "video/mp4", {
+        mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
+        mkv: "video/x-matroska", avi: "video/x-msvideo", "3gp": "video/3gpp",
+        m4v: "video/mp4", mpeg: "video/mpeg", mpg: "video/mpeg",
+      });
+  const b64 = toBase64(bytes);
+
+  const userContent: any[] = [
+    { type: "text", text: kind === "audio"
+        ? "Transcribe this English audio and translate to Persian as subtitle segments."
+        : "Transcribe the English speech in this video and translate to Persian as subtitle segments." },
+  ];
+  if (kind === "audio") {
+    userContent.push({ type: "input_audio", input_audio: { data: b64, format: mime.split("/")[1] || "ogg" } });
+  } else {
+    // Gemini supports video via inline data; the gateway forwards image_url data URLs to inlineData.
+    userContent.push({ type: "image_url", image_url: { url: `data:${mime};base64,${b64}` } });
+  }
+
+  const data = await gateway({
+    model: "google/gemini-2.5-flash",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You transcribe English speech (from audio or video) and translate it to Persian (Farsi). Split into short subtitle segments (max ~7 seconds each, ideally one sentence or clause per segment). For each segment provide start and end times in seconds (floats) and the Persian translation only (no English, no transliteration). Be accurate with timing. If there is no English speech, return an empty segments array.",
+      },
+      { role: "user", content: userContent },
+    ],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "return_subtitles",
+          description: "Return Persian subtitle segments with timing.",
+          parameters: {
+            type: "object",
+            properties: {
+              segments: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    start: { type: "number", description: "Start time in seconds" },
+                    end: { type: "number", description: "End time in seconds" },
+                    text: { type: "string", description: "Persian translation of this segment" },
+                  },
+                  required: ["start", "end", "text"],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ["segments"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ],
+    tool_choice: { type: "function", function: { name: "return_subtitles" } },
+  });
+
+
+  const call = data.choices?.[0]?.message?.tool_calls?.[0];
+  const argsRaw = call?.function?.arguments;
+  if (!argsRaw) throw new Error("پاسخی برای رونویسی صوت دریافت نشد.");
+  let parsed: any;
+  try { parsed = typeof argsRaw === "string" ? JSON.parse(argsRaw) : argsRaw; }
+  catch { throw new Error("خروجی صوت قابل پردازش نبود."); }
+
+  const segments: Array<{ start: number; end: number; text: string }> = Array.isArray(parsed?.segments) ? parsed.segments : [];
+  if (segments.length === 0) {
+    throw new Error("متن انگلیسی قابل تشخیصی در صوت پیدا نشد.");
+  }
+  const srt = buildSrt(segments);
+  const preview = segments.map((s) => s.text).join(" ").slice(0, 500);
+  return { srt, preview };
+}
+
+// ---------- Route ----------
+export const Route = createFileRoute("/api/public/bale-webhook")({
+  server: {
+    handlers: {
+      POST: async ({ request }) => {
+        // Outer guard so bot never returns 5xx to Bale (Bale would keep retrying)
+        try {
+          const token = process.env.BALE_BOT_TOKEN;
+          if (!token) {
+            console.error("BALE_BOT_TOKEN not configured");
+            return new Response("ok");
+          }
+
+          let update: any;
+          try { update = await request.json(); }
+          catch (e) { console.error("invalid update json", e); return new Response("ok"); }
+
+          // Inline-keyboard callback (TTS pronunciation + channel verify)
+          if (update?.callback_query) {
+            const cq = update.callback_query;
+            const cbChatId = cq.message?.chat?.id;
+            const cbMsgId = cq.message?.message_id;
+            const cbUserId = cq.from?.id;
+            const dataStr: string = typeof cq.data === "string" ? cq.data : "";
+            try {
+              if (dataStr === "verify" && cbChatId && cbUserId) {
+                const ok = await isChannelMember(token, cbUserId);
+                if (ok) {
+                  await answerCallbackQuery(token, cq.id, "✅ عضویت تایید شد");
+                  await sendMessage(
+                    token,
+                    cbChatId,
+                    "عالی! حالا می‌تونی از ربات استفاده کنی 🎉\nبرام بفرست تا به فارسی ترجمه کنم:\n• 📝 متن انگلیسی\n• 🖼 تصویر حاوی متن انگلیسی\n• 🎙 پیام صوتی یا فایل صوتی انگلیسی\n• 🎬 ویدیو انگلیسی (.srt فارسی)\n\n🧪 تحلیل آزمایش پزشکی: عکس برگه‌ی آزمایش رو با کپشن «تحلیل» بفرست.",
+                  );
+                } else {
+                  await answerCallbackQuery(token, cq.id, "❌ هنوز عضو نیستی");
+                  await sendJoinPrompt(token, cbChatId, cbMsgId);
+                }
+                return new Response("ok");
+              }
+              if (dataStr.startsWith("tts:") && cbChatId) {
+                // Gate TTS callback too
+                if (cbUserId && !(await isChannelMember(token, cbUserId))) {
+                  await answerCallbackQuery(token, cq.id, "ابتدا در کانال عضو شو");
+                  await sendJoinPrompt(token, cbChatId, cbMsgId);
+                  return new Response("ok");
+                }
+                const mode = dataStr.slice(4);
+                const text = extractEnglishFromCallbackMessage(cq.message, mode);
+                if (!text) {
+                  await answerCallbackQuery(token, cq.id, "متن پیدا نشد. دوباره بفرست.");
+                } else {
+                  await answerCallbackQuery(token, cq.id, "در حال ساخت تلفظ…");
+                  try {
+                    await sendPronunciation(token, cbChatId, text, cbMsgId);
+                  } catch (e) {
+                    const detail = e instanceof Error ? e.message : String(e);
+                    console.error("tts error", detail);
+                    await sendMessage(token, cbChatId, `خطا در ساخت تلفظ: ${detail.slice(0, 300)}`, cbMsgId);
+                  }
+                }
+              } else if (dataStr.startsWith("syn:") && cbChatId) {
+                if (cbUserId && !(await isChannelMember(token, cbUserId))) {
+                  await answerCallbackQuery(token, cq.id, "ابتدا در کانال عضو شو");
+                  await sendJoinPrompt(token, cbChatId, cbMsgId);
+                  return new Response("ok");
+                }
+                const mode = dataStr.slice(4);
+                const text = extractEnglishFromCallbackMessage(cq.message, mode);
+                if (!text) {
+                  await answerCallbackQuery(token, cq.id, "کلمه‌ای پیدا نشد.");
+                } else {
+                  await answerCallbackQuery(token, cq.id, "در حال یافتن مترادف…");
+                  try {
+                    const out = await synonymsAndAntonym(text);
+                    await sendLongMessage(token, cbChatId, out || "نتیجه‌ای دریافت نشد.", cbMsgId);
+                  } catch (e) {
+                    const detail = e instanceof Error ? e.message : String(e);
+                    console.error("syn error", detail);
+                    await sendMessage(token, cbChatId, `خطا در یافتن مترادف: ${detail.slice(0, 300)}`, cbMsgId);
+                  }
+                }
+              } else {
+                await answerCallbackQuery(token, cq.id);
+              }
+            } catch (e) { console.error("callback_query error", e); }
+            return new Response("ok");
+          }
+
+          const msg = update?.message ?? update?.edited_message ?? update?.channel_post;
+          if (!msg) return new Response("ok");
+          const chatId = msg.chat?.id;
+          const msgId = msg.message_id;
+          const fromUserId = msg.from?.id;
+          if (!chatId) return new Response("ok");
+
+          // Channel membership gate — only for private chats (skip groups/channels)
+          const chatType = msg.chat?.type;
+          if ((chatType === "private" || !chatType) && fromUserId) {
+            try {
+              const ok = await isChannelMember(token, fromUserId);
+              if (!ok) {
+                await sendJoinPrompt(token, chatId, msgId);
+                return new Response("ok");
+              }
+            } catch (e) { console.error("membership check failed", e); }
+          }
+
+
+          try {
+            // /start
+            if (typeof msg.text === "string" && msg.text.startsWith("/start")) {
+              await sendMessage(
+                token,
+                chatId,
+                "سلام! 👋\nبرام بفرست تا به فارسی ترجمه کنم:\n• 📝 متن انگلیسی\n• 🖼 تصویر حاوی متن انگلیسی\n• 🎙 پیام صوتی یا فایل صوتی انگلیسی\n• 🎬 ویدیو انگلیسی (فایل زیرنویس .srt فارسی تحویل می‌گیری)\n\n🧪 تحلیل آزمایش پزشکی:\nعکس برگه‌ی آزمایش رو بفرست و توی کپشن بنویس «تحلیل» یا «آزمایش» (یا اول /analyze رو بزن).\n\n📚 مترادف و متضاد کلمه:\nبنویس: «مترادف <کلمه>» یا از دکمه‌ی زیر ترجمه‌ی متن استفاده کن. مثلاً: مترادف happy",
+              );
+              return new Response("ok");
+            }
+
+            // /analyze command
+            if (typeof msg.text === "string" && (msg.text.startsWith("/analyze") || msg.text.startsWith("/test"))) {
+              await sendMessage(
+                token,
+                chatId,
+                "🧪 حالت تحلیل آزمایش\nلطفاً عکس برگه‌ی آزمایشت رو بفرست و توی کپشنش بنویس: «تحلیل»\n(هرچی واضح‌تر و باکیفیت‌تر، تحلیل دقیق‌تر)",
+              );
+              return new Response("ok");
+            }
+
+            // /synonyms command or "مترادف <word>" prefix
+            if (typeof msg.text === "string") {
+              const t = msg.text.trim();
+              const lower = t.toLowerCase();
+              let word = "";
+              if (lower.startsWith("/synonyms") || lower.startsWith("/syn")) {
+                word = t.replace(/^\/syn(onyms)?\s*/i, "").trim();
+              } else if (t.startsWith("مترادف")) {
+                word = t.replace(/^مترادف[:\s]*/, "").trim();
+              }
+              if (lower === "/synonyms" || lower === "/syn" || t === "مترادف") {
+                await sendMessage(
+                  token,
+                  chatId,
+                  "📚 حالت مترادف و متضاد\nکلمه‌ی موردنظرتو بنویس، مثلاً:\n«مترادف happy»\nیا فقط بنویس: happy و بعد روی دکمه «📚 مترادف و متضاد» بزن.",
+                );
+                return new Response("ok");
+              }
+              if (word) {
+                try {
+                  const out = await synonymsAndAntonym(word);
+                  await sendLongMessage(token, chatId, out || "نتیجه‌ای دریافت نشد.", msgId);
+                } catch (e) {
+                  const detail = e instanceof Error ? e.message : String(e);
+                  console.error("syn cmd error", detail);
+                  await sendMessage(token, chatId, `خطا در یافتن مترادف: ${detail.slice(0, 300)}`, msgId);
+                }
+                return new Response("ok");
+              }
+            }
+
+            // Voice / Audio → SRT
+            const audio = msg.voice || msg.audio;
+            if (audio?.file_id) {
+              await sendMessage(token, chatId, "در حال رونویسی صوت و ساخت زیرنویس فارسی… ⏳ (ممکنه چند ثانیه طول بکشه)", msgId);
+              try {
+                const { srt, preview } = await transcribeAndTranslateMedia(token, audio.file_id, "audio");
+                const encoder = new TextEncoder();
+                const bytes = encoder.encode("\uFEFF" + srt);
+                await sendDocument(token, chatId, "translation_fa.srt", bytes, "application/x-subrip", "زیرنویس فارسی ✅", msgId);
+                if (preview) await sendMessage(token, chatId, `پیش‌نمایش ترجمه:\n${preview}`, msgId);
+              } catch (e) {
+                const detail = e instanceof Error ? e.message : String(e);
+                console.error("audio error", detail);
+                await sendMessage(token, chatId, `خطا در پردازش صوت: ${detail.slice(0, 400)}`, msgId);
+              }
+              return new Response("ok");
+            }
+
+            // Video → SRT (msg.video or msg.video_note)
+            const video = msg.video || msg.video_note;
+            if (video?.file_id) {
+              await sendMessage(token, chatId, "در حال پردازش ویدیو و ساخت زیرنویس فارسی… ⏳ (ممکنه کمی طول بکشه)", msgId);
+              try {
+                const { srt, preview } = await transcribeAndTranslateMedia(token, video.file_id, "video");
+                const bytes = new TextEncoder().encode("\uFEFF" + srt);
+                await sendDocument(token, chatId, "translation_fa.srt", bytes, "application/x-subrip", "زیرنویس فارسی ✅", msgId);
+                if (preview) await sendMessage(token, chatId, `پیش‌نمایش ترجمه:\n${preview}`, msgId);
+              } catch (e) {
+                const detail = e instanceof Error ? e.message : String(e);
+                console.error("video error", detail);
+                await sendMessage(token, chatId, `خطا در پردازش ویدیو: ${detail.slice(0, 400)}`, msgId);
+              }
+              return new Response("ok");
+            }
+
+            // Photo
+            if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+              const largest = msg.photo[msg.photo.length - 1];
+              const analyze = wantsAnalysis(msg.caption);
+              await sendMessage(
+                token,
+                chatId,
+                analyze ? "در حال تحلیل برگه‌ی آزمایش… 🧪⏳ (ممکنه چند ثانیه طول بکشه)" : "در حال خواندن تصویر و ترجمه… ⏳",
+                msgId,
+              );
+              try {
+                if (analyze) {
+                  const analysis = await analyzeLabTestImage(token, largest.file_id);
+                  await sendLongMessage(token, chatId, analysis || "تحلیلی دریافت نشد.", msgId);
+                } else {
+                  const translation = await translateImage(token, largest.file_id);
+                  await sendMessage(token, chatId, translation || "ترجمه‌ای دریافت نشد.", msgId);
+                  // Offer pronunciation of the English text in the image
+                  try {
+                    const english = await extractEnglishFromImage(token, largest.file_id);
+                    if (english && english.length > 1) {
+                      const body = `می‌خوای تلفظ انگلیسی متن داخل تصویرو بشنوی؟ 🔊\n\n${EN_MARKER} ${english}`;
+                      await sendMessage(token, chatId, body, msgId, ttsKeyboard("msg"));
+                    }
+                  } catch (e) { console.error("english extract error", e); }
+                }
+              } catch (e) {
+                const detail = e instanceof Error ? e.message : String(e);
+                console.error("image error", detail);
+                await sendMessage(token, chatId, `${analyze ? "خطا در تحلیل آزمایش" : "خطا در ترجمه تصویر"}: ${detail.slice(0, 400)}`, msgId);
+              }
+              return new Response("ok");
+            }
+
+            // Text
+            if (typeof msg.text === "string" && msg.text.trim()) {
+              const src = msg.text.trim();
+              try {
+                const translation = await translateText(src);
+                // Decide which side is English: if src is mostly Latin letters, src is English; otherwise translation is.
+                const latinRatio = (src.match(/[A-Za-z]/g)?.length ?? 0) / Math.max(src.length, 1);
+                const english = latinRatio > 0.4 ? src : (translation || "");
+                const body = `${translation || "ترجمه‌ای دریافت نشد."}\n\n${EN_MARKER} ${english}`;
+                await sendMessage(token, chatId, body, msgId, ttsKeyboard("msg"));
+              } catch (e) {
+                const detail = e instanceof Error ? e.message : String(e);
+                console.error("text error", detail);
+                await sendMessage(token, chatId, `خطا در ترجمه: ${detail.slice(0, 400)}`, msgId);
+              }
+              return new Response("ok");
+            }
+
+            // Document containing audio or video
+            const docMime = typeof msg.document?.mime_type === "string" ? msg.document.mime_type : "";
+            if (msg.document?.file_id && (docMime.startsWith("audio/") || docMime.startsWith("video/"))) {
+              const kind: "audio" | "video" = docMime.startsWith("video/") ? "video" : "audio";
+              await sendMessage(token, chatId, kind === "video"
+                ? "در حال پردازش فایل ویدیو و ساخت زیرنویس فارسی… ⏳"
+                : "در حال رونویسی فایل صوتی و ساخت زیرنویس فارسی… ⏳", msgId);
+              try {
+                const { srt, preview } = await transcribeAndTranslateMedia(token, msg.document.file_id, kind);
+                const bytes = new TextEncoder().encode("\uFEFF" + srt);
+                await sendDocument(token, chatId, "translation_fa.srt", bytes, "application/x-subrip", "زیرنویس فارسی ✅", msgId);
+                if (preview) await sendMessage(token, chatId, `پیش‌نمایش ترجمه:\n${preview}`, msgId);
+              } catch (e) {
+                const detail = e instanceof Error ? e.message : String(e);
+                console.error("media-doc error", detail);
+                await sendMessage(token, chatId, `خطا در پردازش فایل: ${detail.slice(0, 400)}`, msgId);
+              }
+              return new Response("ok");
+            }
+
+            await sendMessage(token, chatId, "لطفاً متن، تصویر، صوت یا ویدیوی انگلیسی بفرست.", msgId);
+            return new Response("ok");
+
+          } catch (innerErr) {
+            const detail = innerErr instanceof Error ? innerErr.message : String(innerErr);
+            console.error("inner handler error", detail, innerErr);
+            await sendMessage(token, chatId, `یه خطای غیرمنتظره رخ داد: ${detail.slice(0, 300)}`, msgId);
+            return new Response("ok");
+          }
+        } catch (fatal) {
+          // Never let the worker crash the webhook — always 200 OK to Bale
+          console.error("FATAL bale-webhook error", fatal);
+          return new Response("ok");
+        }
+      },
+      GET: async () => new Response("Bale translator webhook is alive"),
+    },
+  },
+});

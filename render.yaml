@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bale-bot
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: BALE_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

@@ -1,0 +1,6 @@
+build:
+  command: npm install
+start:
+  command: node server.js
+env:
+  - PORT=3000

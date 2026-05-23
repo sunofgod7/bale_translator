@@ -1,0 +1,16 @@
+{
+  "name": "bale-echo-bot",
+  "version": "1.0.0",
+  "description": "Bale Echo Bot - Repeats user messages",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": ">=14.x"
+  }
+}

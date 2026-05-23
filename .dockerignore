@@ -1,0 +1,7 @@
+node_modules
+.git
+.env.local
+.vercel
+*.log
+README.md
+set-webhook.ps1
