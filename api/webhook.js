@@ -88,74 +88,7 @@ async function sendLongMessage(chatId, text, replyTo) {
   }
 }
 
-async function answerCallbackQuery(callbackQueryId, text) {
-  try {
-    await fetch(`${BALE_API}/answerCallbackQuery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        callback_query_id: callbackQueryId,
-        text: text?.slice(0, 200),
-      }),
-    });
-  } catch (e) {
-    console.error("[bale] answerCallbackQuery failed", e);
-  }
-}
 
-async function sendJoinPrompt(chatId, replyTo) {
-  await sendMessage(
-    chatId,
-    `سلام 👋\nبرای استفاده از ربات، اول باید عضو کانال ما بشی:\n${REQUIRED_CHANNEL}\n\nبعد از عضویت، روی دکمه «✅ عضو شدم، بررسی کن» بزن.`,
-    replyTo,
-    joinKeyboard(),
-  );
-}
-
-// ---------- Bale helpers ----------
-async function sendMessage(chatId, text, replyTo, replyMarkup) {
-  try {
-    await fetch(`${BALE_API}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text.slice(0, 4000),
-        reply_to_message_id: replyTo,
-        reply_markup: replyMarkup,
-      }),
-    });
-  } catch (e) {
-    console.error("[bale] sendMessage failed", e);
-  }
-}
-
-async function sendLongMessage(chatId, text, replyTo) {
-  const MAX = 3800;
-  if (text.length <= MAX) return sendMessage(chatId, text, replyTo);
-  for (let i = 0; i < text.length; i += MAX) {
-    await sendMessage(
-      chatId,
-      text.slice(i, i + MAX),
-      i === 0 ? replyTo : undefined,
-    );
-  }
-}
-
-async function answerCallbackQuery(callbackQueryId, text) {
-  try {
-    await fetch(`${BALE_API}/answerCallbackQuery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        callback_query_id: callbackQueryId,
-        text: text?.slice(0, 200),
-      }),
-    });
-  } catch (e) {
-    console.error("[bale] answerCallbackQuery failed", e);
-  }
-}
 
 async function sendAudio(chatId, filename, bytes, contentType, caption, replyTo) {
   try {
@@ -251,14 +184,6 @@ function ttsKeyboard(mode = "src") {
     inline_keyboard: [
       [{ text: "🔊 شنیدن تلفظ انگلیسی", callback_data: `tts:${mode}` }],
       [{ text: "📚 مترادف و متضاد", callback_data: `syn:${mode}` }],
-    ],
-  };
-}
-
-function synOnlyKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: "📚 مترادف و متضاد", callback_data: "syn:src" }],
     ],
   };
 }
