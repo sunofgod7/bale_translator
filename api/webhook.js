@@ -20,14 +20,24 @@ async function isChannelMember(userId) {
       body: JSON.stringify({ chat_id: REQUIRED_CHANNEL, user_id: userId }),
     });
     const txt = await res.text();
+    console.log(`[bale] getChatMember response for user ${userId}:`, txt);
+    
     let j;
     try {
       j = JSON.parse(txt);
-    } catch {
+    } catch (parseErr) {
+      console.error("[bale] Failed to parse getChatMember response:", txt);
       return false;
     }
-    if (!j?.ok) return false;
+    
+    if (!j?.ok) {
+      console.error("[bale] getChatMember not ok:", j?.description || txt);
+      return false;
+    }
+    
     const status = j?.result?.status;
+    console.log(`[bale] User ${userId} status in channel:`, status);
+    
     return (
       status === "member" ||
       status === "administrator" ||
@@ -732,8 +742,13 @@ module.exports = async (req, res) => {
       const dataStr = typeof cq.data === "string" ? cq.data : "";
 
       try {
+        console.log(`[callback] Received callback_query: ${dataStr}, userId: ${cbUserId}, chatId: ${cbChatId}`);
+        
         if (dataStr === "verify" && cbChatId && cbUserId) {
+          console.log(`[callback] Verifying membership for user ${cbUserId}`);
           const ok = await isChannelMember(cbUserId);
+          console.log(`[callback] Membership check result: ${ok}`);
+          
           if (ok) {
             await answerCallbackQuery(cq.id, "✅ عضویت تایید شد");
             await sendMessage(
@@ -742,7 +757,10 @@ module.exports = async (req, res) => {
             );
           } else {
             await answerCallbackQuery(cq.id, "❌ هنوز عضو نیستی");
-            await sendJoinPrompt(cbChatId, cbMsgId);
+            await sendMessage(
+              cbChatId,
+              "لطفاً ابتدا در کانال عضو شوید و سپس دوباره تلاش کنید.\n\n⚠️ نکته: اگر تازه عضو شدید، ممکن است چند ثانیه طول بکشد تا سیستم به‌روز شود. لطفاً کمی صبر کنید و دوباره امتحان کنید.",
+            );
           }
           return res.status(200).json({ ok: true });
         }
