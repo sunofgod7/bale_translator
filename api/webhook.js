@@ -1,4 +1,5 @@
 const fetch = require("node-fetch");
+const FormData = require("form-data");
 
 const BALE_TOKEN = process.env.BALE_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -125,7 +126,7 @@ async function answerCallbackQuery(callbackQueryId, text) {
 
 async function sendAudio(chatId, filename, bytes, contentType, caption, replyTo) {
   try {
-    const form = new (require("form-data"))();
+    const form = new FormData();
     form.append("chat_id", String(chatId));
     if (caption) form.append("caption", caption.slice(0, 1000));
     if (replyTo) form.append("reply_to_message_id", String(replyTo));
@@ -150,7 +151,7 @@ async function sendAudio(chatId, filename, bytes, contentType, caption, replyTo)
 
 async function sendDocument(chatId, filename, bytes, contentType, caption, replyTo) {
   try {
-    const form = new (require("form-data"))();
+    const form = new FormData();
     form.append("chat_id", String(chatId));
     if (caption) form.append("caption", caption.slice(0, 1000));
     if (replyTo) form.append("reply_to_message_id", String(replyTo));
@@ -225,14 +226,6 @@ function ttsOnlyKeyboard(mode = "src") {
   return {
     inline_keyboard: [
       [{ text: "🔊 شنیدن تلفظ انگلیسی", callback_data: `tts:${mode}` }],
-    ],
-  };
-}
-
-function synKeyboard(mode = "src") {
-  return {
-    inline_keyboard: [
-      [{ text: "📚 مترادف و متضاد", callback_data: `syn:${mode}` }],
     ],
   };
 }
