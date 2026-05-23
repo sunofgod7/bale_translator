@@ -10,9 +10,17 @@ const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GE
 // Required channel membership
 const REQUIRED_CHANNEL = "@motarjem_mehran";
 const CHANNEL_URL = "https://ble.ir/motarjem_mehran";
+// Set to "false" to disable membership check temporarily
+const ENABLE_MEMBERSHIP_CHECK = process.env.ENABLE_MEMBERSHIP_CHECK !== "false";
 
 // ---------- Channel membership ----------
 async function isChannelMember(userId) {
+  // If membership check is disabled, always return true
+  if (!ENABLE_MEMBERSHIP_CHECK) {
+    console.log("[bale] Membership check is disabled, allowing all users");
+    return true;
+  }
+  
   try {
     const res = await fetch(`${BALE_API}/getChatMember`, {
       method: "POST",
