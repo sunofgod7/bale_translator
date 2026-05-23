@@ -106,6 +106,21 @@ async function sendLongMessage(chatId, text, replyTo) {
   }
 }
 
+async function answerCallbackQuery(callbackQueryId, text) {
+  try {
+    await fetch(`${BALE_API}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: callbackQueryId,
+        text: text?.slice(0, 200),
+      }),
+    });
+  } catch (e) {
+    console.error("[bale] answerCallbackQuery failed", e);
+  }
+}
+
 
 
 async function sendAudio(chatId, filename, bytes, contentType, caption, replyTo) {
